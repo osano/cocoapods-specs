@@ -12,10 +12,10 @@ In your `Podfile` add a source for our Cocoapods specs repo
 source "https://github.com/osano/cocoapods-specs.git"
 ```
 
-Within your `target` add the `ConsentSDK` and version as a referenced pod.
+Within your `target` add the `OsanoConsentManagerSDK` and version as a referenced pod.
 
 ```Ruby
-pod 'ConsentSDK', '1.0.0'
+pod 'OsanoConsentManagerSDK', '1.0.0'
 ```
 
 Your projects `Podfile` should look similar to the one below.
@@ -25,6 +25,6 @@ platform :ios, '10.0'
 source "https://github.com/osano/cocoapods-specs.git"
 target 'MyApp' do
  use_frameworks!
- pod 'ConsentSDK', '1.0.0'
+ pod 'OsanoConsentManagerSDK', '1.0.0'
 end
 ```
