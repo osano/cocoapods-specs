@@ -4,9 +4,9 @@ Repository for the Osano iOS Consent Manager Mobile SDK Cocoapods spec files.
 
 ## Usage
 
-Install Cocoapods using "[Getting Started](https://guides.cocoapods.org/using/getting-started.html)".
+Install Cocoapods using "[Cocoapods - Getting Started](https://guides.cocoapods.org/using/getting-started.html)".
 
-In your `Podfile` add a source for our Cocoapods specs repo
+In your project's `Podfile` add a source for our Cocoapods specs repo
 
 ```Ruby
 source "https://github.com/osano/cocoapods-specs.git"
@@ -18,7 +18,7 @@ Within your `target` add the `OsanoConsentManagerSDK` and version as a reference
 pod 'OsanoConsentManagerSDK', '1.0.0'
 ```
 
-Your projects `Podfile` should look similar to the one below.
+Your project's `Podfile` should look similar to the one below.
 
 ```Ruby
 platform :ios, '10.0'
