@@ -15,13 +15,13 @@ source "https://github.com/osano/cocoapods-specs.git"
 Within your `target` add the `OsanoConsentManagerSDK` and version as a referenced pod.
 
 ```Ruby
-pod 'OsanoConsentManagerSDK', '~> 3.0.0'
+pod 'OsanoConsentManagerSDK', '~> 3.1.0'
 ```
 
 By using a `~>` in front of your version number, you can automatically update to the most recently released major version. If you would rather specify your SDK version, omit the `~>` in front of the version number.
 
 ```Ruby
-pod 'OsanoConsentManagerSDK', '3.0.0'
+pod 'OsanoConsentManagerSDK', '3.1.0'
 ```
 
 Your project's `Podfile` should look similar to the one below.
@@ -31,6 +31,6 @@ platform :ios, '12.1'
 source "https://github.com/osano/cocoapods-specs.git"
 target 'MyApp' do
  use_frameworks!
- pod 'OsanoConsentManagerSDK', '3.0.0'
+ pod 'OsanoConsentManagerSDK', '3.1.0'
 end
 ```
