@@ -15,8 +15,8 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "ConsentSDK",
-            url: "https://libraries.osano.com/ios/OsanoConsentManagerSDK/OsanoConsentManagerSDK-3.2.0.zip",
-            checksum: "520d12e6ecf950a1acdc02841a72722283e79c684db2db1471e95eb097de8975"
+            url: "https://libraries.osano.com/ios/OsanoConsentManagerSDK/OsanoConsentManagerSDK-3.3.0.zip",
+            checksum: "4425a97f328e55bc882fb9d8e0981a03e23b5f78b0ff0d4a0989e0b00916cda5"
         ),
     ]
 )
