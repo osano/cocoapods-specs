@@ -31,7 +31,7 @@ jobs:
         VERSION=${{ github.event.inputs.version }}
         if [ -d "OsanoConsentManagerSDK/${VERSION}" ]; then
           echo "Version ${VERSION} already exists. Exiting."
-          exit 0
+          exit 1
         fi
       working-directory: ${{ github.workspace }}
 
@@ -39,6 +39,10 @@ jobs:
       run: |
         VERSION=${{ github.event.inputs.version }}
         URL="https://libraries.osano.com/ios/OsanoConsentManagerSDK/OsanoConsentManagerSDK-${VERSION}.zip"
+        if ! curl --output /dev/null --silent --head --fail "$URL"; then
+          echo "Error: SDK zip for version ${VERSION} does not exist at ${URL}. Exiting."
+          exit 1
+        fi
         curl -L $URL -o OsanoConsentManagerSDK-${VERSION}.zip
 
     - name: Compute checksum
