@@ -26,6 +26,15 @@ jobs:
           exit 1
         fi
 
+    - name: Check if version already exists
+      run: |
+        VERSION=${{ github.event.inputs.version }}
+        if [ -d "OsanoConsentManagerSDK/${VERSION}" ]; then
+          echo "Version ${VERSION} already exists. Exiting."
+          exit 0
+        fi
+      working-directory: ${{ github.workspace }}
+
     - name: Download SDK zip
       run: |
         VERSION=${{ github.event.inputs.version }}
