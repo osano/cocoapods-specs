@@ -6,10 +6,14 @@ on:
       version:
         description: 'Version number'
         required: true
+  pull_request:
+    types: [opened, synchronize]
+    branches:
+      - main
 
 permissions:
     id-token: write
-    contents: read
+    contents: write
 
 jobs:
   update-sdk:
@@ -17,53 +21,63 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v3
 
-    - name: Ensure version input is provided
-      run: |
-        if [ -z "${{ github.event.inputs.version }}" ]; then
-          echo "Error: Version number is required."
-          exit 1
-        fi
+    # - name: Ensure version input is provided
+    #   run: |
+    #     if [ -z "${{ github.event.inputs.version }}" ]; then
+    #       echo "Error: Version number is required."
+    #       exit 1
+    #     fi
 
-    - name: Check if version already exists
-      run: |
-        VERSION=${{ github.event.inputs.version }}
-        if [ -d "OsanoConsentManagerSDK/${VERSION}" ]; then
-          echo "Version ${VERSION} already exists. Exiting."
-          exit 1
-        fi
-      working-directory: ${{ github.workspace }}
+    # - name: Check if version already exists
+    #   run: |
+    #     # VERSION=${{ github.event.inputs.version }}
+    #     # VERSION=${{ github.event.inputs.version }}
+    #     if [ -d "OsanoConsentManagerSDK/${VERSION}" ]; then
+    #       echo "Version ${VERSION} already exists. Exiting."
+    #       exit 1
+    #     fi
+    #   working-directory: ${{ github.workspace }}
 
     - name: Download SDK zip
       run: |
-        VERSION=${{ github.event.inputs.version }}
+        # VERSION=${{ github.event.inputs.version }}
+        VERSION="3.3.2"
         URL="https://libraries.osano.com/ios/OsanoConsentManagerSDK/OsanoConsentManagerSDK-${VERSION}.zip"
         if ! curl --output /dev/null --silent --head --fail "$URL"; then
           echo "Error: SDK zip for version ${VERSION} does not exist at ${URL}. Exiting."
           exit 1
         fi
         curl -L $URL -o OsanoConsentManagerSDK-${VERSION}.zip
+      working-directory: ${{ github.workspace }}
+
 
     - name: Compute checksum
       run: |
+        # VERSION=${{ github.event.inputs.version }}
+        VERSION="3.3.2"
         CHECKSUM=$(swift package compute-checksum OsanoConsentManagerSDK-${VERSION}.zip)
         echo "CHECKSUM=$CHECKSUM" >> $GITHUB_ENV
         rm OsanoConsentManagerSDK-${VERSION}.zip
+      working-directory: ${{ github.workspace }}
+
 
     - name: Create new version folder
       run: |
-        VERSION=${{ github.event.inputs.version }}
-        mkdir -p OsanoConsentManagerSDK/${VERSION}
+        # VERSION=${{ github.event.inputs.version }}
+        VERSION="3.3.2"
+        mkdir -p OsanoConsentManagerSDK/${VERSION}-test
       working-directory: ${{ github.workspace }}
 
     - name: Copy template.podspec and update attributes
       run: |
-        cp template.podspec OsanoConsentManagerSDK/${VERSION}/OsanoConsentManagerSDK.podspec
-        VERSION=${{ github.event.inputs.version }}
+        # VERSION=${{ github.event.inputs.version }}
+        VERSION="3.3.2"
+        cp template.podspec OsanoConsentManagerSDK/${VERSION}-test/OsanoConsentManagerSDK.podspec
         URL="https://libraries.osano.com/ios/OsanoConsentManagerSDK/OsanoConsentManagerSDK-${VERSION}.zip"
-        sed -i '' "s|s.version      = '<version>'|s.version      = '${VERSION}'|" OsanoConsentManagerSDK/${VERSION}/OsanoConsentManagerSDK.podspec
-        sed -i '' "s|s.source       = { :http => '<path-to-s3-zip>' }|s.source       = { :http => '${URL}' }|" OsanoConsentManagerSDK/${VERSION}/OsanoConsentManagerSDK.podspec
+        sed -i '' "s|s.version      = '<version>'|s.version      = '${VERSION}'|" OsanoConsentManagerSDK/${VERSION}-test/OsanoConsentManagerSDK.podspec
+        sed -i '' "s|s.source       = { :http => '<path-to-s3-zip>' }|s.source       = { :http => '${URL}' }|" OsanoConsentManagerSDK/${VERSION}-test/OsanoConsentManagerSDK.podspec
       working-directory: ${{ github.workspace }}
 
     - name: Update Package.swift
@@ -74,14 +88,15 @@ jobs:
         sed -i '' "s|checksum: .*|checksum: \"${CHECKSUM}\"|" Package.swift
       working-directory: ${{ github.workspace }}
 
-    - name: Install GitHub CLI
-      run: |
-        brew install gh
+    # - name: Install GitHub CLI
+    #   run: |
+    #     brew install gh
 
     - name: Create branch and commit changes
       run: |
-        VERSION=${{ github.event.inputs.version }}
-        BRANCH_NAME="update-osano-sdk-${VERSION}"
+        # VERSION=${{ github.event.inputs.version }}
+        VERSION="3.3.2"
+        BRANCH_NAME="update-osano-sdk-${VERSION}-test"
         git config --global user.name 'Osano Automation'
         git config --global user.email 'automation@osano.com'
         git checkout -b $BRANCH_NAME
@@ -89,10 +104,13 @@ jobs:
         git commit -m "Update OsanoConsentManagerSDK to version $VERSION"
         git push origin $BRANCH_NAME
 
-    - name: Create Pull Request
-      run: |
-        VERSION=${{ github.event.inputs.version }}
-        BRANCH_NAME="update-osano-sdk-${VERSION}"
-        gh pr create --title "Update OsanoConsentManagerSDK to version $VERSION" --body "This PR updates the OsanoConsentManagerSDK to version $VERSION." --head $BRANCH_NAME --base main
-      env:
-        GITHUB_TOKEN: ${{ secrets.OSANO_GITHUB_ACCESS_TOKEN }}
+    # - name: Create and push a new git tag
+    #   run: |
+    #     VERSION=${{ github.event.inputs.version }}
+    #     git config --global user.email "Osano Automation"
+    #     git config --global user.name "automation@osano.com"
+    #     git tag -a "${VERSION}" -m "Release version ${VERSION}"
+    #     git push origin "v${VERSION}"
+    #   env:
+    #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    #   working-directory: ${{ github.workspace }}
