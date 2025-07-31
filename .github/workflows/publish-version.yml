@@ -1,0 +1,94 @@
+name: Publish to CocoaPods and Swift Package Manager
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number'
+        required: true
+
+permissions:
+    id-token: write
+    contents: write
+
+jobs:
+  publish:
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ github.event.inputs.version }}
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.OSANO_GITHUB_ACCESS_TOKEN }}
+
+    - name: Ensure version input is provided
+      run: |
+        if [ -z "${VERSION}" ]; then
+          echo "Error: Version number is required."
+          exit 1
+        fi
+
+    - name: Check if version already exists
+      run: |
+        if [ -d "OsanoConsentManagerSDK/${VERSION}" ]; then
+          echo "Version ${VERSION} already exists. Exiting."
+          exit 1
+        fi
+
+    - name: Download SDK zip
+      run: |
+        URL="https://libraries.osano.com/ios/OsanoConsentManagerSDK/OsanoConsentManagerSDK-${VERSION}.zip"
+        if ! curl --output /dev/null --silent --head --fail "$URL"; then
+          echo "Error: SDK zip for version ${VERSION} does not exist at ${URL}. Exiting."
+          exit 1
+        fi
+        curl -L $URL -o OsanoConsentManagerSDK-${VERSION}.zip
+
+    - name: Compute checksum
+      run: |
+        CHECKSUM=$(swift package compute-checksum OsanoConsentManagerSDK-${VERSION}.zip)
+        echo "CHECKSUM=$CHECKSUM" >> $GITHUB_ENV
+        rm OsanoConsentManagerSDK-${VERSION}.zip
+
+    - name: Create new version folder
+      run: |
+        mkdir -p OsanoConsentManagerSDK/${VERSION}
+
+    - name: Copy and update template.podspec
+      run: |
+        cp template.podspec OsanoConsentManagerSDK/${VERSION}/OsanoConsentManagerSDK.podspec
+        URL="https://libraries.osano.com/ios/OsanoConsentManagerSDK/OsanoConsentManagerSDK-${VERSION}.zip"
+        sed -i '' "s|s.version      = '<version>'|s.version      = '${VERSION}'|" OsanoConsentManagerSDK/${VERSION}/OsanoConsentManagerSDK.podspec
+        sed -i '' "s|s.source       = { :http => '<path-to-s3-zip>' }|s.source       = { :http => '${URL}' }|" OsanoConsentManagerSDK/${VERSION}/OsanoConsentManagerSDK.podspec
+
+    - name: Update Package.swift
+      run: |
+        CHECKSUM=${{ env.CHECKSUM }}
+        sed -i '' "s|url: .*|url: \"https://libraries.osano.com/ios/OsanoConsentManagerSDK/OsanoConsentManagerSDK-${VERSION}.zip\",|" Package.swift
+        sed -i '' "s|checksum: .*|checksum: \"${CHECKSUM}\"|" Package.swift
+
+    - name: Update README.md
+      run: |
+        sed -i '' "s/pod 'OsanoConsentManagerSDK', '~> [0-9]*\.[0-9]*\.[0-9]*/pod 'OsanoConsentManagerSDK', '~> ${VERSION}/" README.md
+        sed -i '' "s/pod 'OsanoConsentManagerSDK', '[0-9]*\.[0-9]*\.[0-9]*/pod 'OsanoConsentManagerSDK', '${VERSION}/g" README.md
+
+    - name: Set up Git
+      run: |
+        git config --global user.name 'Osano Automation'
+        git config --global user.email 'automation@osano.com'
+
+    - name: Create branch and commit changes
+      run: |
+        git add .
+        git commit -m "Publish version $VERSION"
+        git push origin main
+
+    - name: Create and push a new git tag
+      run: |
+        git tag -a "${VERSION}" -m "Publish version ${VERSION}"
+        git push origin "${VERSION}"
