@@ -26,9 +26,19 @@ jobs:
         working-directory: ${{ github.workspace }}
 
     steps:
+    # workflow_dispatch checks out the ref it was launched from. Refuse anything
+    # but main so a feature/stale branch can never be published onto main.
+    - name: Reject non-main dispatch
+      if: github.ref != 'refs/heads/main'
+      run: |
+        echo "Error: this workflow must be run from the 'main' branch (got '${{ github.ref }}')."
+        exit 1
+
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
+        ref: main
+        fetch-depth: 0
         token: ${{ secrets.OSANO_GITHUB_ACCESS_TOKEN }}
 
     - name: Validate version input
@@ -37,23 +47,34 @@ jobs:
           echo "Error: Version number is required."
           exit 1
         fi
-        if ! echo "${VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        if ! echo "${VERSION}" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
           echo "Error: Version '${VERSION}' is not a valid semantic version (expected MAJOR.MINOR.PATCH)."
           exit 1
         fi
 
-    - name: Check if version already exists
+    # Determine publish state so a rerun can resume a half-published release
+    # (folder committed to main but tag push never landed) instead of dead-ending
+    # at a blanket "already exists" check.
+    - name: Check publish state
       run: |
-        if [ -d "OsanoConsentManagerSDK/${VERSION}" ]; then
-          echo "Version ${VERSION} already exists. Exiting."
+        FOLDER_EXISTS=false
+        TAG_EXISTS=false
+        [ -d "OsanoConsentManagerSDK/${VERSION}" ] && FOLDER_EXISTS=true
+        git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1 && TAG_EXISTS=true
+
+        if [ "$FOLDER_EXISTS" = true ] && [ "$TAG_EXISTS" = true ]; then
+          echo "Version ${VERSION} is already fully published (folder + tag). Exiting."
           exit 1
-        fi
-        if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
-          echo "Git tag ${VERSION} already exists. Exiting."
+        elif [ "$FOLDER_EXISTS" = true ]; then
+          echo "Version ${VERSION} folder exists but tag is missing; resuming to publish the tag only."
+          echo "RESUME_TAG_ONLY=true" >> "$GITHUB_ENV"
+        elif [ "$TAG_EXISTS" = true ]; then
+          echo "Git tag ${VERSION} exists but the version folder does not. Manual intervention required. Exiting."
           exit 1
         fi
 
     - name: Download SDK zip
+      if: env.RESUME_TAG_ONLY != 'true'
       run: |
         URL="https://libraries.osano.com/ios/OsanoConsentManagerSDK/OsanoConsentManagerSDK-${VERSION}.zip"
         if ! curl --output /dev/null --silent --head --fail "$URL"; then
@@ -63,16 +84,19 @@ jobs:
         curl -fL "$URL" -o "OsanoConsentManagerSDK-${VERSION}.zip"
 
     - name: Compute checksum
+      if: env.RESUME_TAG_ONLY != 'true'
       run: |
         CHECKSUM=$(swift package compute-checksum "OsanoConsentManagerSDK-${VERSION}.zip")
         echo "CHECKSUM=$CHECKSUM" >> "$GITHUB_ENV"
         rm "OsanoConsentManagerSDK-${VERSION}.zip"
 
     - name: Create new version folder
+      if: env.RESUME_TAG_ONLY != 'true'
       run: |
         mkdir -p "OsanoConsentManagerSDK/${VERSION}"
 
     - name: Copy and update template.podspec
+      if: env.RESUME_TAG_ONLY != 'true'
       run: |
         cp template.podspec "OsanoConsentManagerSDK/${VERSION}/OsanoConsentManagerSDK.podspec"
         URL="https://libraries.osano.com/ios/OsanoConsentManagerSDK/OsanoConsentManagerSDK-${VERSION}.zip"
@@ -80,12 +104,14 @@ jobs:
         sed -i '' "s|s.source       = { :http => '<path-to-s3-zip>' }|s.source       = { :http => '${URL}' }|" "OsanoConsentManagerSDK/${VERSION}/OsanoConsentManagerSDK.podspec"
 
     - name: Update Package.swift
+      if: env.RESUME_TAG_ONLY != 'true'
       run: |
         URL="https://libraries.osano.com/ios/OsanoConsentManagerSDK/OsanoConsentManagerSDK-${VERSION}.zip"
         sed -i '' "s|url: .*|url: \"${URL}\",|" Package.swift
         sed -i '' "s|checksum: .*|checksum: \"${CHECKSUM}\"|" Package.swift
 
     - name: Update README.md
+      if: env.RESUME_TAG_ONLY != 'true'
       run: |
         sed -i '' "s/pod 'OsanoConsentManagerSDK', '~> [0-9]*\.[0-9]*\.[0-9]*/pod 'OsanoConsentManagerSDK', '~> ${VERSION}/" README.md
         sed -i '' "s/pod 'OsanoConsentManagerSDK', '[0-9]*\.[0-9]*\.[0-9]*/pod 'OsanoConsentManagerSDK', '${VERSION}/g" README.md
@@ -93,6 +119,7 @@ jobs:
     # Validation gate: fail before anything is pushed/tagged if the generated
     # manifests are malformed, so a bad artifact never reaches consumers.
     - name: Validate generated manifests
+      if: env.RESUME_TAG_ONLY != 'true'
       run: |
         echo "Validating podspec..."
         pod ipc spec "OsanoConsentManagerSDK/${VERSION}/OsanoConsentManagerSDK.podspec" > /dev/null
@@ -108,6 +135,7 @@ jobs:
         git config --global user.email 'automation@osano.com'
 
     - name: Commit and push changes
+      if: env.RESUME_TAG_ONLY != 'true'
       run: |
         git add .
         git commit -m "Publish version ${VERSION}"
@@ -128,11 +156,27 @@ jobs:
           exit 1
         fi
 
+    # Runs on both a fresh publish and a RESUME_TAG_ONLY rerun. Idempotent and
+    # retryable so a transient failure here never leaves a release half-published.
     - name: Create and push a new git tag
       run: |
         if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
-          echo "Tag ${VERSION} already exists on remote. Skipping."
+          echo "Tag ${VERSION} already exists on remote. Nothing to do."
           exit 0
         fi
-        git tag -a "${VERSION}" -m "Publish version ${VERSION}"
-        git push origin "${VERSION}"
+        # Tag the commit that actually published this version, not necessarily
+        # HEAD, so a resume after a newer release still tags the right commit.
+        TARGET=$(git log --grep="^Publish version ${VERSION}$" --format=%H -1)
+        TARGET=${TARGET:-HEAD}
+        git tag -a "${VERSION}" -m "Publish version ${VERSION}" "${TARGET}" 2>/dev/null || true
+        n=0
+        until [ "$n" -ge 5 ]; do
+          if git push origin "refs/tags/${VERSION}"; then
+            echo "Pushed tag ${VERSION}."
+            exit 0
+          fi
+          n=$((n+1))
+          echo "Tag push failed, retrying ($n/5)..."
+        done
+        echo "Error: failed to push tag ${VERSION} after 5 attempts. Rerun this workflow to resume."
+        exit 1
