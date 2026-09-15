@@ -55,22 +55,42 @@ jobs:
     # Determine publish state so a rerun can resume a half-published release
     # (folder committed to main but tag push never landed) instead of dead-ending
     # at a blanket "already exists" check.
+    #
+    # Resume is only entered when the folder provably came from a prior run of
+    # THIS automation: there must be a matching "Publish version X" commit AND the
+    # committed podspec must self-describe version X. This prevents resume from
+    # tagging pre-existing/legacy or malformed folders (e.g. 2.0.8 declares 2.0.9).
     - name: Check publish state
       run: |
+        FOLDER=OsanoConsentManagerSDK/${VERSION}
+        PODSPEC=${FOLDER}/OsanoConsentManagerSDK.podspec
+        URL="https://libraries.osano.com/ios/OsanoConsentManagerSDK/OsanoConsentManagerSDK-${VERSION}.zip"
+
         FOLDER_EXISTS=false
         TAG_EXISTS=false
-        [ -d "OsanoConsentManagerSDK/${VERSION}" ] && FOLDER_EXISTS=true
+        [ -d "$FOLDER" ] && FOLDER_EXISTS=true
         git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1 && TAG_EXISTS=true
 
-        if [ "$FOLDER_EXISTS" = true ] && [ "$TAG_EXISTS" = true ]; then
+        if [ "$TAG_EXISTS" = true ] && [ "$FOLDER_EXISTS" = true ]; then
           echo "Version ${VERSION} is already fully published (folder + tag). Exiting."
           exit 1
-        elif [ "$FOLDER_EXISTS" = true ]; then
-          echo "Version ${VERSION} folder exists but tag is missing; resuming to publish the tag only."
-          echo "RESUME_TAG_ONLY=true" >> "$GITHUB_ENV"
         elif [ "$TAG_EXISTS" = true ]; then
           echo "Git tag ${VERSION} exists but the version folder does not. Manual intervention required. Exiting."
           exit 1
+        elif [ "$FOLDER_EXISTS" = true ]; then
+          # Folder present, no tag. Only resume if this is a genuine prior run.
+          PUBLISH_COMMIT=$(git log --grep="^Publish version ${VERSION}$" --format=%H -1)
+          if [ -z "$PUBLISH_COMMIT" ]; then
+            echo "Folder ${FOLDER} exists but no 'Publish version ${VERSION}' commit was found."
+            echo "This folder was not produced by this automation; refusing to auto-resume. Exiting."
+            exit 1
+          fi
+          if ! grep -q "s.version      = '${VERSION}'" "$PODSPEC" || ! grep -qF "$URL" "$PODSPEC"; then
+            echo "Existing ${PODSPEC} does not self-describe version ${VERSION}; refusing to auto-resume. Exiting."
+            exit 1
+          fi
+          echo "Verified partial publish of ${VERSION} (commit ${PUBLISH_COMMIT}); resuming to publish the tag only."
+          echo "RESUME_TAG_ONLY=true" >> "$GITHUB_ENV"
         fi
 
     - name: Download SDK zip
@@ -82,6 +102,22 @@ jobs:
           exit 1
         fi
         curl -fL "$URL" -o "OsanoConsentManagerSDK-${VERSION}.zip"
+
+    - name: Validate downloaded archive
+      if: env.RESUME_TAG_ONLY != 'true'
+      run: |
+        ZIP="OsanoConsentManagerSDK-${VERSION}.zip"
+        # curl -f rejects 4xx/5xx but not a 200 serving the wrong body (HTML error
+        # page, redirect, truncated upload). Confirm it is a real zip that contains
+        # the framework the podspec vendors, before we hash and delete it.
+        if ! unzip -t "$ZIP" > /dev/null 2>&1; then
+          echo "Error: ${ZIP} is not a valid zip archive. Exiting."
+          exit 1
+        fi
+        if ! unzip -l "$ZIP" | grep -q "ConsentSDK.xcframework"; then
+          echo "Error: ${ZIP} does not contain ConsentSDK.xcframework. Exiting."
+          exit 1
+        fi
 
     - name: Compute checksum
       if: env.RESUME_TAG_ONLY != 'true'
@@ -166,8 +202,13 @@ jobs:
         fi
         # Tag the commit that actually published this version, not necessarily
         # HEAD, so a resume after a newer release still tags the right commit.
+        # No HEAD fallback: if the publish commit is missing, refuse rather than
+        # tag unrelated content (the resume guard should make this unreachable).
         TARGET=$(git log --grep="^Publish version ${VERSION}$" --format=%H -1)
-        TARGET=${TARGET:-HEAD}
+        if [ -z "$TARGET" ]; then
+          echo "Error: no 'Publish version ${VERSION}' commit found to tag. Aborting."
+          exit 1
+        fi
         git tag -a "${VERSION}" -m "Publish version ${VERSION}" "${TARGET}" 2>/dev/null || true
         n=0
         until [ "$n" -ge 5 ]; do
