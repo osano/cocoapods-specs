@@ -1,0 +1,138 @@
+name: Publish to CocoaPods and Swift Package Manager
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g. 3.6.16)'
+        required: true
+
+# Serialize releases: only one publish may run at a time, and never cancel an
+# in-flight one. This closes the git-push race and the version-exists TOCTOU.
+concurrency:
+  group: publish-version
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ github.event.inputs.version }}
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.OSANO_GITHUB_ACCESS_TOKEN }}
+
+    - name: Validate version input
+      run: |
+        if [ -z "${VERSION}" ]; then
+          echo "Error: Version number is required."
+          exit 1
+        fi
+        if ! echo "${VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+          echo "Error: Version '${VERSION}' is not a valid semantic version (expected MAJOR.MINOR.PATCH)."
+          exit 1
+        fi
+
+    - name: Check if version already exists
+      run: |
+        if [ -d "OsanoConsentManagerSDK/${VERSION}" ]; then
+          echo "Version ${VERSION} already exists. Exiting."
+          exit 1
+        fi
+        if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
+          echo "Git tag ${VERSION} already exists. Exiting."
+          exit 1
+        fi
+
+    - name: Download SDK zip
+      run: |
+        URL="https://libraries.osano.com/ios/OsanoConsentManagerSDK/OsanoConsentManagerSDK-${VERSION}.zip"
+        if ! curl --output /dev/null --silent --head --fail "$URL"; then
+          echo "Error: SDK zip for version ${VERSION} does not exist at ${URL}. Exiting."
+          exit 1
+        fi
+        curl -fL "$URL" -o "OsanoConsentManagerSDK-${VERSION}.zip"
+
+    - name: Compute checksum
+      run: |
+        CHECKSUM=$(swift package compute-checksum "OsanoConsentManagerSDK-${VERSION}.zip")
+        echo "CHECKSUM=$CHECKSUM" >> "$GITHUB_ENV"
+        rm "OsanoConsentManagerSDK-${VERSION}.zip"
+
+    - name: Create new version folder
+      run: |
+        mkdir -p "OsanoConsentManagerSDK/${VERSION}"
+
+    - name: Copy and update template.podspec
+      run: |
+        cp template.podspec "OsanoConsentManagerSDK/${VERSION}/OsanoConsentManagerSDK.podspec"
+        URL="https://libraries.osano.com/ios/OsanoConsentManagerSDK/OsanoConsentManagerSDK-${VERSION}.zip"
+        sed -i '' "s|s.version      = '<version>'|s.version      = '${VERSION}'|" "OsanoConsentManagerSDK/${VERSION}/OsanoConsentManagerSDK.podspec"
+        sed -i '' "s|s.source       = { :http => '<path-to-s3-zip>' }|s.source       = { :http => '${URL}' }|" "OsanoConsentManagerSDK/${VERSION}/OsanoConsentManagerSDK.podspec"
+
+    - name: Update Package.swift
+      run: |
+        URL="https://libraries.osano.com/ios/OsanoConsentManagerSDK/OsanoConsentManagerSDK-${VERSION}.zip"
+        sed -i '' "s|url: .*|url: \"${URL}\",|" Package.swift
+        sed -i '' "s|checksum: .*|checksum: \"${CHECKSUM}\"|" Package.swift
+
+    - name: Update README.md
+      run: |
+        sed -i '' "s/pod 'OsanoConsentManagerSDK', '~> [0-9]*\.[0-9]*\.[0-9]*/pod 'OsanoConsentManagerSDK', '~> ${VERSION}/" README.md
+        sed -i '' "s/pod 'OsanoConsentManagerSDK', '[0-9]*\.[0-9]*\.[0-9]*/pod 'OsanoConsentManagerSDK', '${VERSION}/g" README.md
+
+    # Validation gate: fail before anything is pushed/tagged if the generated
+    # manifests are malformed, so a bad artifact never reaches consumers.
+    - name: Validate generated manifests
+      run: |
+        echo "Validating podspec..."
+        pod ipc spec "OsanoConsentManagerSDK/${VERSION}/OsanoConsentManagerSDK.podspec" > /dev/null
+        echo "Validating Package.swift..."
+        swift package dump-package > /dev/null
+        echo "Verifying Package.swift references version ${VERSION}..."
+        grep -q "OsanoConsentManagerSDK-${VERSION}.zip" Package.swift
+        grep -q "checksum: \"${CHECKSUM}\"" Package.swift
+
+    - name: Set up Git
+      run: |
+        git config --global user.name 'Osano Automation'
+        git config --global user.email 'automation@osano.com'
+
+    - name: Commit and push changes
+      run: |
+        git add .
+        git commit -m "Publish version ${VERSION}"
+        # Rebase-and-retry so a commit landing on main between checkout and push
+        # does not cause a lost update or a hard failure.
+        n=0
+        until [ "$n" -ge 5 ]; do
+          if git push origin HEAD:main; then
+            echo "Pushed to main."
+            break
+          fi
+          n=$((n+1))
+          echo "Push rejected, rebasing on origin/main and retrying ($n/5)..."
+          git pull --rebase origin main
+        done
+        if [ "$n" -ge 5 ]; then
+          echo "Error: failed to push to main after 5 attempts."
+          exit 1
+        fi
+
+    - name: Create and push a new git tag
+      run: |
+        if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
+          echo "Tag ${VERSION} already exists on remote. Skipping."
+          exit 0
+        fi
+        git tag -a "${VERSION}" -m "Publish version ${VERSION}"
+        git push origin "${VERSION}"
