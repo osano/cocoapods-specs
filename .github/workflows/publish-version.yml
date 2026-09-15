@@ -31,7 +31,9 @@ jobs:
     - name: Reject non-main dispatch
       if: github.ref != 'refs/heads/main'
       run: |
-        echo "Error: this workflow must be run from the 'main' branch (got '${{ github.ref }}')."
+        # Use the runner-provided $GITHUB_REF (shell-expanded), never a ${{ }}
+        # interpolation, so a branch name with shell metacharacters cannot inject.
+        echo "Error: this workflow must be run from the 'main' branch (got '${GITHUB_REF}')."
         exit 1
 
     - name: Checkout repository
@@ -181,6 +183,9 @@ jobs:
         until [ "$n" -ge 5 ]; do
           if git push origin HEAD:main; then
             echo "Pushed to main."
+            # Record the exact pushed SHA (post-rebase) so the tag step targets
+            # this commit precisely instead of re-deriving it by commit subject.
+            echo "PUBLISH_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
             break
           fi
           n=$((n+1))
@@ -200,13 +205,23 @@ jobs:
           echo "Tag ${VERSION} already exists on remote. Nothing to do."
           exit 0
         fi
-        # Tag the commit that actually published this version, not necessarily
-        # HEAD, so a resume after a newer release still tags the right commit.
+        # Prefer the exact SHA captured at push time (fresh/rebase path). Only the
+        # resume path lacks it; there, derive by commit subject as a last resort.
         # No HEAD fallback: if the publish commit is missing, refuse rather than
         # tag unrelated content (the resume guard should make this unreachable).
-        TARGET=$(git log --grep="^Publish version ${VERSION}$" --format=%H -1)
+        if [ -n "${PUBLISH_SHA}" ]; then
+          TARGET="${PUBLISH_SHA}"
+        else
+          TARGET=$(git log --grep="^Publish version ${VERSION}$" --format=%H -1)
+        fi
         if [ -z "$TARGET" ]; then
-          echo "Error: no 'Publish version ${VERSION}' commit found to tag. Aborting."
+          echo "Error: no publish commit found to tag for ${VERSION}. Aborting."
+          exit 1
+        fi
+        # Guard against subject-grep ambiguity: the target must actually contain
+        # this version's generated podspec.
+        if ! git cat-file -e "${TARGET}:OsanoConsentManagerSDK/${VERSION}/OsanoConsentManagerSDK.podspec" 2>/dev/null; then
+          echo "Error: commit ${TARGET} does not contain OsanoConsentManagerSDK/${VERSION}. Aborting."
           exit 1
         fi
         git tag -a "${VERSION}" -m "Publish version ${VERSION}" "${TARGET}" 2>/dev/null || true
