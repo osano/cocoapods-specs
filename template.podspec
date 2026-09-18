@@ -8,5 +8,5 @@ Pod::Spec.new do |s|
     s.source       = { :http => '<path-to-s3-zip>' }
     s.vendored_frameworks = 'ConsentSDK.xcframework'
     s.platform = :ios
-    s.ios.deployment_target  = '12.1'
+    s.ios.deployment_target  = '13.0'
 end
