@@ -18,7 +18,7 @@ Within your `target` add the `OsanoConsentManagerSDK` and version as a reference
 pod 'OsanoConsentManagerSDK', '~> 3.6.16'
 ```
 
-By using a `~>` in front of your version number, you can automatically update to the most recently released major version. If you would rather specify your SDK version, omit the `~>` in front of the version number.
+By using a `~>` in front of your version number, you can automatically update to the most recently released compatible version in the 3.6 release series. If you would rather specify your SDK version, omit the `~>` in front of the version number.
 
 ```Ruby
 pod 'OsanoConsentManagerSDK', '3.6.16'
