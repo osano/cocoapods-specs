@@ -31,8 +31,9 @@ jobs:
     - name: Reject non-main dispatch
       if: github.ref != 'refs/heads/main'
       run: |
-        # Use the runner-provided $GITHUB_REF (shell-expanded), never a ${{ }}
-        # interpolation, so a branch name with shell metacharacters cannot inject.
+        # Use the runner-provided $GITHUB_REF (shell-expanded), never a GitHub
+        # expression interpolation, so a branch name with shell metacharacters
+        # cannot inject.
         echo "Error: this workflow must be run from the 'main' branch (got '${GITHUB_REF}')."
         exit 1
 
