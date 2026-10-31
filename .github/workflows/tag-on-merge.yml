@@ -1,0 +1,137 @@
+name: Tag published version on merge
+
+# pull_request_target, not pull_request: the workflow file that executes is
+# main's copy, so a publish branch cannot swap out the tagger that will run
+# with contents:write on its own merge. Safe with that trigger because the job
+# never checks out or executes anything from the PR — it reads main and the
+# merge commit only.
+on:
+  pull_request_target:
+    types: [closed]
+    branches:
+      - main
+  # Recovery path: a publish PR merged before this workflow was installed, or
+  # whose tag push failed, gets its tag from the publish commit already on main.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Merged but untagged version (e.g. 3.7.0)'
+        required: true
+
+# The plain GITHUB_TOKEN suffices: tags are unprotected in this repo and the
+# public repo keeps zero secrets.
+permissions:
+  contents: write
+
+# Per-version group: each run targets its own refs/tags/<version>, so global
+# serialization buys nothing — and GitHub keeps only one pending run per
+# group, so a shared group would let any closed PR silently displace a queued
+# tag run. Dispatch normalizes to the publish-branch form so a dispatch and a
+# merge run for the same version serialize instead of racing the tag push.
+concurrency:
+  group: tag-on-merge-${{ github.event_name == 'workflow_dispatch' && format('publish-{0}', github.event.inputs.version) || github.event.pull_request.head.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'publish-'))
+    runs-on: ubuntu-latest
+    env:
+      # Event fields pass through env (shell-expanded), never GitHub expression
+      # interpolation inside run scripts, so a crafted branch name cannot inject.
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      EVENT_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+      INPUT_VERSION: ${{ github.event.inputs.version }}
+    steps:
+      - name: Derive and validate version
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION="${HEAD_REF#publish-}"
+          fi
+          if ! echo "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "Error: '${VERSION}' is not a valid semantic version; not tagging."
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Resolve the publish commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            # Exactly the commit a merge event would have carried: the merged
+            # publish PR's merge commit (also correct for squash and rebase,
+            # where the PR tip never lands on main as-is). An API failure
+            # fails the job: only a successful empty result may fall through,
+            # or an outage would silently reroute to the weaker fallback.
+            MERGE_SHA=$(gh pr list --repo "$GITHUB_REPOSITORY" --state merged --base main \
+              --head "publish-${VERSION}" --json mergeCommit \
+              --jq '.[0].mergeCommit.oid // empty')
+            if [ -z "$MERGE_SHA" ]; then
+              # No publish PR (a release that predates this automation): the
+              # last first-parent commit that touched the version folder.
+              MERGE_SHA=$(git log origin/main --first-parent --format=%H -1 -- "OsanoConsentManagerSDK/${VERSION}/")
+            fi
+            if [ -z "$MERGE_SHA" ]; then
+              echo "Error: no commit on main publishes OsanoConsentManagerSDK/${VERSION}; nothing to tag."
+              exit 1
+            fi
+          else
+            MERGE_SHA="$EVENT_MERGE_SHA"
+          fi
+          echo "MERGE_SHA=$MERGE_SHA" >> "$GITHUB_ENV"
+
+      # The branch name alone must not be trusted to tag arbitrary content:
+      # the target commit has to actually publish this version.
+      - name: Verify the publish commit publishes this version
+        run: |
+          PODSPEC="OsanoConsentManagerSDK/${VERSION}/OsanoConsentManagerSDK.podspec"
+          if ! git cat-file -e "${MERGE_SHA}:${PODSPEC}" 2>/dev/null; then
+            echo "Error: commit ${MERGE_SHA} does not contain ${PODSPEC}. Aborting."
+            exit 1
+          fi
+          if ! git show "${MERGE_SHA}:${PODSPEC}" | grep -Fq "s.version      = '${VERSION}'"; then
+            echo "Error: ${PODSPEC} at ${MERGE_SHA} does not self-describe version ${VERSION}. Aborting."
+            exit 1
+          fi
+
+      # Idempotent and retryable so a transient failure never leaves a release
+      # half-published: re-running resumes at the tag push.
+      - name: Create and push the tag
+        run: |
+          git config user.name 'Osano Automation'
+          git config user.email 'automation@osano.com'
+          # Tags are unprotected here, so an existing tag is only a success if
+          # it points at this publish commit; anything else is tampering or a
+          # mistake and must surface, not be silently blessed.
+          if git fetch --no-tags origin "refs/tags/${VERSION}:refs/tags/existing-${VERSION}" 2>/dev/null; then
+            EXISTING=$(git rev-parse "refs/tags/existing-${VERSION}^{commit}")
+            if [ "$EXISTING" = "$MERGE_SHA" ]; then
+              echo "Tag ${VERSION} already points at the publish commit. Nothing to do."
+              exit 0
+            fi
+            echo "Error: tag ${VERSION} exists but points at ${EXISTING}, not the publish commit ${MERGE_SHA}."
+            echo "Investigate before moving or overwriting the tag."
+            exit 1
+          fi
+          git tag -a "${VERSION}" -m "Publish version ${VERSION}" "${MERGE_SHA}"
+          n=0
+          until [ "$n" -ge 5 ]; do
+            if git push origin "refs/tags/${VERSION}"; then
+              echo "Pushed tag ${VERSION}."
+              exit 0
+            fi
+            n=$((n+1))
+            echo "Tag push failed, retrying ($n/5)..."
+            if [ "$n" -lt 5 ]; then sleep $((n * 5)); fi
+          done
+          echo "Error: failed to push tag ${VERSION} after 5 attempts. Re-run this workflow to resume."
+          exit 1
