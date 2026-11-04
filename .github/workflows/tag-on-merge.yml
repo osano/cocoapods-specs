@@ -19,9 +19,11 @@ on:
         required: true
 
 # The plain GITHUB_TOKEN suffices: tags are unprotected in this repo and the
-# public repo keeps zero secrets.
+# public repo keeps zero secrets. pull-requests read backs the dispatch path's
+# merged-PR lookup; everything unspecified is none.
 permissions:
   contents: write
+  pull-requests: read
 
 # Per-version group: each run targets its own refs/tags/<version>, so global
 # serialization buys nothing — and GitHub keeps only one pending run per
