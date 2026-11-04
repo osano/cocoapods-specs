@@ -18,7 +18,7 @@ Within your `target` add the `OsanoConsentManagerSDK` and version as a reference
 pod 'OsanoConsentManagerSDK', '~> 3.7.1'
 ```
 
-By using a `~>` in front of your version number, you can automatically update to the most recently released major version. If you would rather specify your SDK version, omit the `~>` in front of the version number.
+By using a `~>` in front of your version number, you automatically pick up patch releases: `~> 3.7.1` resolves to the newest version at or above 3.7.1 and below 3.8.0. If you would rather pin an exact SDK version, omit the `~>` in front of the version number.
 
 ```Ruby
 pod 'OsanoConsentManagerSDK', '3.7.1'
@@ -27,7 +27,7 @@ pod 'OsanoConsentManagerSDK', '3.7.1'
 Your project's `Podfile` should look similar to the one below.
 
 ```Ruby
-platform :ios, '12.1'
+platform :ios, '13.0'
 source "https://github.com/osano/cocoapods-specs.git"
 target 'MyApp' do
  use_frameworks!
